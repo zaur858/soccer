@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Head Soccer - Final</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #222;
+            font-family: 'Segoe UI', sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        #game-container {
+            position: relative;
+            width: 1280px;
+            max-width: 100%;
+            aspect-ratio: 16/9;
+            background: #000;
+            box-shadow: 0 0 50px rgba(0, 0, 0, 0.5);
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(to bottom, #87CEEB, #E0F7FA);
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        #start-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            z-index: 999;
+            pointer-events: auto;
+        }
+
+        button {
+            padding: 25px 60px;
+            font-size: 40px;
+            font-weight: bold;
+            cursor: pointer;
+            background: #FFD700;
+            color: #000;
+            border: 5px solid #FFF;
+            border-radius: 50px;
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.5);
+            transition: transform 0.1s;
+            margin-top: 20px;
+        }
+
+        button:hover {
+            transform: scale(1.05);
+            background: #FFEA00;
+        }
+
+        button:active {
+            transform: scale(0.95);
+        }
+
+        .controls-hint {
+            color: #AAA;
+            margin-top: 20px;
+            font-size: 18px;
+            text-align: center;
+            line-height: 1.5;
+        }
+
+        #score-board {
+            position: absolute;
+            top: 20px;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            gap: 50px;
+            font-size: 60px;
+            font-weight: bold;
+            color: white;
+            text-shadow: 3px 3px 0 #000;
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="game-container">
+        <canvas id="gameCanvas" width="1280" height="720"></canvas>
+
+        <div id="ui-layer">
+            <div id="score-board">
+                <span id="p1-score">0</span>
+                <span id="timer">60</span>
+                <span id="p2-score">0</span>
+            </div>
+
+            <div id="start-screen">
+                <h1 style="font-size: 80px; margin: 0; color: #FFD700; text-shadow: 5px 5px 0 #FF0000;">HEAD SOCCER</h1>
+                <p style="font-size: 24px;">CLICK TO ENABLE AUDIO</p>
+                <button id="start-btn">ENTER GAME</button>
+                <div class="controls-hint">
+                    <b>P1 (Left):</b> W,A,D to Move/Jump, SPACE to Kick<br>
+                    <b>P2 (Right):</b> ARROWS to Move/Jump, ENTER to Kick
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const Audio = {
+            ctx: null,
+            init: function () {
+                if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                if (this.ctx.state === 'suspended') this.ctx.resume();
+            },
+            playTone: function (freq, type, dur = 0.1) {
+                if (!this.ctx) return;
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.type = type;
+                osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+                gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + dur);
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.start();
+                osc.stop(this.ctx.currentTime + dur);
+            },
+            jump: function () { this.playTone(300, 'square', 0.1); },
+            kick: function () { this.playTone(100, 'sawtooth', 0.15); },
+            goal: function () {
+                if (!this.ctx) return;
+                [440, 554, 659].forEach((f, i) => setTimeout(() => this.playTone(f, 'square', 0.3), i * 150));
+            },
+            select: function () { this.playTone(600, 'sine', 0.05); }
+        };
+
+        const CHARACTERS = [
+            { id: 1, name: 'Ejder', color: '#f496bf' },
+            { id: 2, name: 'Gülü', color: '#ffff00' },
+            { id: 3, name: 'Taleh', color: '#1e3887' },
+            { id: 4, name: 'Totu', color: '#ffffff' },
+            { id: 5, name: 'Meymun', color: '#6cabdd' },
+            { id: 6, name: 'Nail', color: '#d90012' }
+        ];
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        const STATE = {
+            mode: 'MENU',
+            p1Sel: 0, p2Sel: 1,
+            p1: { x: 200, y: 580, vx: 0, vy: 0, score: 0, face: new Image(), expr: 'IDLE', kickTimer: 0, isGrounded: false },
+            p2: { x: 1080, y: 580, vx: 0, vy: 0, score: 0, face: new Image(), expr: 'IDLE', kickTimer: 0, isGrounded: false },
+            ball: { x: 640, y: 300, vx: 0, vy: 0, r: 25 },
+            timer: 60,
+            gameOver: false
+        };
+
+        const KEYS = {};
+        window.addEventListener('keydown', e => {
+            KEYS[e.code] = true;
+            if (STATE.mode === 'MENU') handleMenuInput(e.code);
+        });
+        window.addEventListener('keyup', e => KEYS[e.code] = false);
+
+        function loadImages() {
+            STATE.p1.face.src = `assets/faces/face${CHARACTERS[STATE.p1Sel].id}.png`;
+            STATE.p2.face.src = `assets/faces/face${CHARACTERS[STATE.p2Sel].id}.png`;
+        }
+
+        function handleMenuInput(code) {
+            if (code === 'KeyA' || code === 'ArrowLeft') {
+                if (code.includes('Arrow')) { STATE.p2Sel = (STATE.p2Sel - 1 + CHARACTERS.length) % CHARACTERS.length; }
+                else { STATE.p1Sel = (STATE.p1Sel - 1 + CHARACTERS.length) % CHARACTERS.length; }
+                Audio.select();
+            }
+            if (code === 'KeyD' || code === 'ArrowRight') {
+                if (code.includes('Arrow')) { STATE.p2Sel = (STATE.p2Sel + 1) % CHARACTERS.length; }
+                else { STATE.p1Sel = (STATE.p1Sel + 1) % CHARACTERS.length; }
+                Audio.select();
+            }
+
+            if (code === 'Space' || code === 'Enter') {
+                document.getElementById('start-btn').style.display = 'none'; // Ensure button gone
+                STATE.mode = 'GAME';
+                document.getElementById('score-board').style.display = 'flex';
+                loadImages();
+                resetRound(0);
+            }
+        }
+
+        const GRAVITY = 3000; // Increased gravity
+        const SPEED = 500;
+        const JUMP_FORCE = -1200;
+        const GROUND_Y = 580;
+
+        function update(dt) {
+            if (STATE.mode !== 'GAME' || STATE.gameOver) return;
+
+            STATE.timer -= dt;
+            if (STATE.timer <= 0) { STATE.timer = 0; endGame(); }
+            document.getElementById('timer').innerText = Math.ceil(STATE.timer);
+
+            // Inputs via Code
+            handlePlayer(STATE.p1, KEYS['KeyA'], KEYS['KeyD'], KEYS['KeyW'], KEYS['Space'], dt);
+            handlePlayer(STATE.p2, KEYS['ArrowLeft'], KEYS['ArrowRight'], KEYS['ArrowUp'], KEYS['Enter'], dt);
+
+            // Ball Physics
+            STATE.ball.vy += GRAVITY * dt;
+            STATE.ball.x += STATE.ball.vx * dt;
+            STATE.ball.y += STATE.ball.vy * dt;
+
+            // Ground Bounce Damping
+            if (STATE.ball.y > GROUND_Y - STATE.ball.r) {
+                STATE.ball.y = GROUND_Y - STATE.ball.r;
+                if (Math.abs(STATE.ball.vy) < 300) { STATE.ball.vy = 0; } // Threshold
+                else { STATE.ball.vy *= -0.6; } // Low bounce
+
+                // Friction on ground
+                if (Math.abs(STATE.ball.vy) < 10) STATE.ball.vx *= 0.90;
+            }
+
+            if (STATE.ball.y < STATE.ball.r) { STATE.ball.y = STATE.ball.r; STATE.ball.vy *= -0.8; }
+            if (STATE.ball.x < STATE.ball.r) { STATE.ball.x = STATE.ball.r; STATE.ball.vx *= -0.8; }
+            if (STATE.ball.x > 1280 - STATE.ball.r) { STATE.ball.x = 1280 - STATE.ball.r; STATE.ball.vx *= -0.8; }
+
+            // Air drag
+            STATE.ball.vx *= 0.995;
+
+            checkHeader(STATE.p1);
+            checkHeader(STATE.p2);
+
+            if (STATE.ball.x < 50 && STATE.ball.y > 380) { Audio.goal(); resetRound(2); }
+            if (STATE.ball.x > 1230 && STATE.ball.y > 380) { Audio.goal(); resetRound(1); }
+        }
+
+        function handlePlayer(p, left, right, jump, kick, dt) {
+            if (p.kickTimer > 0) {
+                p.kickTimer -= dt;
+                if (p.kickTimer <= 0) p.expr = 'IDLE';
+            }
+
+            if (kick && p.kickTimer <= 0) {
+                p.kickTimer = 0.15;
+                p.expr = 'KICK';
+                Audio.kick();
+            }
+
+            p.vx = 0;
+            if (left) p.vx = -SPEED;
+            if (right) p.vx = SPEED;
+
+            // Jump Logic (Proximity Check)
+            if (jump && p.y >= GROUND_Y - 10) {
+                p.vy = JUMP_FORCE;
+                p.y = GROUND_Y - 10; // Unstick
+                Audio.jump();
+            }
+
+            p.vy += GRAVITY * dt;
+            p.x += p.vx * dt;
+            p.y += p.vy * dt;
+
+            if (p.y >= GROUND_Y) {
+                p.y = GROUND_Y;
+                p.vy = 0;
+            }
+
+            if (p.x < 0) p.x = 0;
+            if (p.x > 1280 - 60) p.x = 1280 - 60;
+        }
+
+        function checkHeader(p) {
+            const headX = p.x + 30;
+            const headY = p.y + 30;
+            const dist = Math.hypot(STATE.ball.x - headX, STATE.ball.y - headY);
+            const minDist = 35 + STATE.ball.r;
+
+            if (dist < minDist) {
+                const nx = (STATE.ball.x - headX) / dist;
+                const ny = (STATE.ball.y - headY) / dist;
+                const overlap = minDist - dist;
+
+                STATE.ball.x += nx * overlap;
+                STATE.ball.y += ny * overlap;
+
+                let force = 600;
+                if (p.kickTimer > 0) {
+                    force = 1600;
+                    STATE.ball.vy = -1000;
+                    STATE.ball.vx = (p === STATE.p1 ? 1 : -1) * 1200;
+                } else {
+                    STATE.ball.vx = nx * force + p.vx * 0.5;
+                    STATE.ball.vy = ny * force + p.vy * 0.5;
+                }
+            }
+        }
+
+        function resetRound(winner) {
+            if (winner === 1) { STATE.p1.score++; showExpr(STATE.p1, 'WIN'); showExpr(STATE.p2, 'LOSE'); }
+            if (winner === 2) { STATE.p2.score++; showExpr(STATE.p2, 'WIN'); showExpr(STATE.p1, 'LOSE'); }
+
+            document.getElementById('p1-score').innerText = STATE.p1.score;
+            document.getElementById('p2-score').innerText = STATE.p2.score;
+
+            STATE.ball.x = 640; STATE.ball.y = 200; STATE.ball.vx = 0; STATE.ball.vy = 0;
+            STATE.p1.x = 200; STATE.p1.y = GROUND_Y;
+            STATE.p2.x = 1080; STATE.p2.y = GROUND_Y;
+        }
+
+        function showExpr(p, type) {
+            p.expr = type;
+            setTimeout(() => { if (p.expr === type) p.expr = 'IDLE'; }, 3000);
+        }
+
+        function endGame() {
+            STATE.gameOver = true;
+            STATE.mode = 'GAMEOVER';
+            document.getElementById('start-screen').style.display = 'flex';
+
+            let winnerText = "DRAW";
+            if (STATE.p1.score > STATE.p2.score) winnerText = CHARACTERS[STATE.p1Sel].name + " WINS!";
+            if (STATE.p2.score > STATE.p1.score) winnerText = CHARACTERS[STATE.p2Sel].name + " WINS!";
+
+            document.querySelector('#start-screen h1').innerText = "GAME OVER";
+            document.querySelector('#start-screen p').innerText = winnerText;
+            document.querySelector('#start-btn').innerText = "MENU";
+            document.getElementById('start-btn').onclick = () => location.reload();
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, 1280, 720);
+
+            if (STATE.mode === 'MENU') { drawMenu(); return; }
+
+            ctx.fillStyle = '#4CAF50'; ctx.fillRect(0, 680, 1280, 40);
+            ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.fillRect(0, 380, 50, 300); ctx.fillRect(1230, 380, 50, 300);
+
+            drawPlayer(STATE.p1, CHARACTERS[STATE.p1Sel]);
+            drawPlayer(STATE.p2, CHARACTERS[STATE.p2Sel]);
+
+            ctx.beginPath(); ctx.arc(STATE.ball.x, STATE.ball.y, STATE.ball.r, 0, Math.PI * 2);
+            ctx.fillStyle = 'white'; ctx.fill(); ctx.stroke();
+        }
+
+        function drawPlayer(p, conf) {
+            ctx.fillStyle = conf.color;
+            ctx.beginPath(); ctx.roundRect(p.x, p.y + 40, 60, 60, 10); ctx.fill();
+
+            ctx.save();
+            ctx.beginPath(); ctx.arc(p.x + 30, p.y + 20, 40, 0, Math.PI * 2); ctx.clip();
+            try {
+                if (p.face.complete && p.face.naturalHeight) ctx.drawImage(p.face, p.x - 10, p.y - 20, 80, 80);
+                else { ctx.fillStyle = '#FCC'; ctx.fillRect(p.x - 10, p.y - 20, 80, 80); }
+            } catch (e) { }
+            ctx.restore();
+            ctx.beginPath(); ctx.arc(p.x + 30, p.y + 20, 40, 0, Math.PI * 2); ctx.lineWidth = 3; ctx.stroke();
+
+            ctx.fillStyle = '#111';
+            ctx.beginPath();
+            let xOff = 0, yOff = 0, rot = 0;
+            if (p.expr === 'KICK') { xOff = (p === STATE.p1) ? 25 : -25; yOff = -25; rot = (p === STATE.p1) ? -0.5 : 0.5; }
+            ctx.ellipse(p.x + 30 + xOff, p.y + 100 + yOff, 15, 8, rot, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.textAlign = "center";
+            if (p.expr === 'WIN') {
+                ctx.font = "bold 20px Arial"; ctx.fillStyle = "#FFF";
+                ctx.fillText("Var-yoxuna atdım bu qolu", p.x + 30, p.y - 40);
+            }
+            if (p.expr === 'LOSE') {
+                ctx.font = "bold 20px Arial"; ctx.fillStyle = "#FFF";
+                ctx.fillText("peysər çıxdım", p.x + 30, p.y - 40);
+            }
+            ctx.textAlign = "start";
+        }
+
+        function drawMenu() {
+            ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, 0, 1280, 720);
+            ctx.textAlign = "center";
+
+            ctx.fillStyle = '#FFF'; ctx.font = "bold 40px Arial"; ctx.fillText("PLAYER 1 (A / D)", 320, 200);
+            ctx.fillStyle = CHARACTERS[STATE.p1Sel].color; ctx.fillRect(280, 250, 80, 80);
+            ctx.fillStyle = '#FFF'; ctx.font = "30px Arial"; ctx.fillText(CHARACTERS[STATE.p1Sel].name, 320, 380);
+
+            ctx.font = "50px Arial"; ctx.fillText("VS", 640, 300);
+
+            ctx.fillStyle = '#FFF'; ctx.font = "bold 40px Arial"; ctx.fillText("PLAYER 2 (Arrows)", 960, 200);
+            ctx.fillStyle = CHARACTERS[STATE.p2Sel].color; ctx.fillRect(920, 250, 80, 80);
+            ctx.fillStyle = '#FFF'; ctx.font = "30px Arial"; ctx.fillText(CHARACTERS[STATE.p2Sel].name, 960, 380);
+
+            ctx.fillStyle = '#FFD700'; ctx.font = "bold 50px Arial"; ctx.fillText("PRESS SPACE TO START", 640, 600);
+        }
+
+        let lastTime = 0;
+        function loop(ts) {
+            const dt = (ts - lastTime) / 1000;
+            lastTime = ts;
+            update(Math.min(dt, 0.1));
+            draw();
+            requestAnimationFrame(loop);
+        }
+
+        document.getElementById('start-btn').addEventListener('click', () => {
+            document.getElementById('start-screen').style.display = 'none';
+            Audio.init();
+            requestAnimationFrame(loop);
+        });
+    </script>
+</body>
+
+</html>
